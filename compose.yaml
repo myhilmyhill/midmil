@@ -1,0 +1,16 @@
+services:
+  midmil:
+    build: .
+    init: true
+    privileged: true
+    devices:
+      - /dev/snd:/dev/snd
+    volumes:
+      - /run/user/1000/pipewire-0:/run/user/1000/pipewire-0
+      - ./outputs:/code/outputs
+      - ./uploads:/code/uploads
+    ports:
+      - 8083:80
+    environment:
+      - PIPEWIRE_RUNTIME_DIR=/run/user/1000
+      - XDG_RUNTIME_DIR=/run/user/1000
