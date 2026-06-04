@@ -20,7 +20,7 @@ def get_midi_reset_data() -> bytes:
     track_header = b'MTrk' + len(track_data).to_bytes(4, 'big')
     return header + track_header + track_data
 
-async def run_conversion(midi_path: str, wav_path: str):
+async def run_conversion(midi_path: str, output_path: str):
     async with process_lock:
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f"[{now_str}] 変換開始: {midi_path}")
@@ -41,46 +41,52 @@ async def run_conversion(midi_path: str, wav_path: str):
         except Exception as e:
             print(f"MIDI reset failed to send: {e}")
         
-        temp_wav_path = wav_path + ".tmp"
+        temp_flac_path = output_path + ".tmp"
+        
         record_proc = await asyncio.create_subprocess_exec(
-            "arecord", "-D", ALSA_DEVICE, "-f", "S16_LE", "-c", "2", "-r", "48000", "-t", "wav", temp_wav_path,
+            "ffmpeg", "-y", "-f", "alsa", "-channels", "2", "-sample_rate", "48000", "-i", ALSA_DEVICE, "-c:a", "flac", "-f", "flac", temp_flac_path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
 
-        # 録音プロセス（arecord）が開始し、ALSAデバイスが初期化されるのを2秒待つ
+        # 録音プロセス（ffmpeg）が開始し、ALSAデバイスが初期化されるのを1秒待つ
         # （一部のUSBキャプチャカードは、録音開始時にハードウェアミキサーが自動的にミュート状態にリセットされるため）
         await asyncio.sleep(1)
 
-        # arecord がすでに終了しているかチェック（即座にクラッシュしたか）
+        # ffmpeg がすでに終了しているかチェック（即座にクラッシュしたか）
         if record_proc.returncode is not None:
             record_stdout, record_stderr = await record_proc.communicate()
-            print(f"arecord failed immediately with code {record_proc.returncode}, stdout: {record_stdout.decode().strip()}, stderr: {record_stderr.decode().strip()}")
-            if os.path.exists(temp_wav_path):
+            print(f"ffmpeg recording failed immediately with code {record_proc.returncode}, stdout: {record_stdout.decode().strip()}, stderr: {record_stderr.decode().strip()}")
+            if os.path.exists(temp_flac_path):
                 try:
-                    os.remove(temp_wav_path)
+                    os.remove(temp_flac_path)
                 except Exception as e:
-                    print(f"Failed to clean up temp file {temp_wav_path}: {e}")
+                    print(f"Failed to clean up temp file {temp_flac_path}: {e}")
             return
 
         # 録音開始後にミキサーのミュート解除と音量調整を実行
         mixer_cmds = [
-            ["amixer", "-c", "Em28xxAudio", "cset", "name=Line In Switch", "on"],
-            ["amixer", "-c", "Em28xxAudio", "cset", "name=Line In Volume", "80%"],
-            ["amixer", "-c", "Em28xxAudio", "cset", "name=Master Switch", "on"],
-            ["amixer", "-c", "Em28xxAudio", "cset", "name=PCM Switch", "on"],
-            ["amixer", "-c", "Em28xxAudio", "cset", "name=Line Switch", "on"]
+            ["amixer", "-D", "hw:Em28xxAudio", "cset", "name=Line In Switch", "on"],
+            ["amixer", "-D", "hw:Em28xxAudio", "cset", "name=Line In Volume", "50%"],
         ]
         for cmd in mixer_cmds:
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-                )
-                stdout, stderr = await proc.communicate()
-                if proc.returncode != 0:
-                     print(f"mixer setup error for {cmd}: exit {proc.returncode}, stderr: {stderr.decode().strip()}")
-            except Exception as e:
-                print(f"mixer setup exception for {cmd}: {e}")
+            for attempt in range(5):
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                    )
+                    stdout, stderr = await proc.communicate()
+                    if proc.returncode == 0:
+                        break
+                    else:
+                        err_msg = stderr.decode().strip()
+                        print(f"mixer setup attempt {attempt + 1} failed for {cmd}: exit {proc.returncode}, stderr: {err_msg}")
+                        if attempt < 4:
+                            await asyncio.sleep(1.0)
+                except Exception as e:
+                    print(f"mixer setup exception for {cmd} on attempt {attempt + 1}: {e}")
+                    if attempt < 4:
+                        await asyncio.sleep(1.0)
 
         # MIDI再生を開始
         play_proc = await asyncio.create_subprocess_exec(
@@ -92,20 +98,36 @@ async def run_conversion(midi_path: str, wav_path: str):
         if play_proc.returncode != 0:
             print(f"aplaymidi failed with code {play_proc.returncode}, stderr: {play_stderr.decode().strip()}")
         
-        record_proc.terminate()
-        record_stdout, record_stderr = await record_proc.communicate()
-        # 1, -15 or 143 usually means terminated by SIGTERM/SIGINT, which is expected/normal for arecord
-        if record_proc.returncode not in (0, 1, -15, 143):
-            print(f"arecord failed with code {record_proc.returncode}, stdout: {record_stdout.decode().strip()}, stderr: {record_stderr.decode().strip()}")
-        
-        # 録音完了後に一時ファイルを最終出力先にリネーム
         try:
-            if os.path.exists(temp_wav_path):
-                os.rename(temp_wav_path, wav_path)
-            else:
-                print(f"Temporary file {temp_wav_path} not found, cannot rename to {wav_path}")
-        except Exception as e:
-            print(f"Failed to rename {temp_wav_path} to {wav_path}: {e}")
+            record_proc.terminate()
+        except ProcessLookupError:
+            pass
+        record_stdout, record_stderr = await record_proc.communicate()
+        # If the file exists and is not empty, we consider it a success,
+        # but we still print a warning if the returncode is unexpected.
+        is_success = False
+        if os.path.exists(temp_flac_path) and os.path.getsize(temp_flac_path) > 0:
+            is_success = True
+            if record_proc.returncode not in (0, 1, -15, 255, -255, 143):
+                print(f"ffmpeg recording finished with unexpected code {record_proc.returncode}, but output file exists. stdout: {record_stdout.decode().strip()}, stderr: {record_stderr.decode().strip()}")
+        else:
+            print(f"ffmpeg recording failed with code {record_proc.returncode}. Output file missing or empty. stdout: {record_stdout.decode().strip()}, stderr: {record_stderr.decode().strip()}")
+
+        if is_success:
+            # Rename temp FLAC file to final path upon success
+            try:
+                abs_temp = os.path.abspath(temp_flac_path)
+                abs_out = os.path.abspath(output_path)
+                os.rename(abs_temp, abs_out)
+                print(f"Successfully converted and saved: {abs_out}")
+            except Exception as e:
+                print(f"Failed to rename {temp_flac_path} to {output_path}: {e}")
+        else:
+            if os.path.exists(temp_flac_path):
+                try:
+                    os.remove(temp_flac_path)
+                except Exception as e:
+                    print(f"Failed to clean up incomplete FLAC file {temp_flac_path}: {e}")
 
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        print(f"[{now_str}] 変換完了: {wav_path}")
+        print(f"[{now_str}] 変換完了: {output_path}")
