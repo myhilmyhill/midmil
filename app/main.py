@@ -28,7 +28,7 @@ async def index():
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <h2>1. MIDIアップロード</h2>
     <form action="/upload" method="post" enctype="multipart/form-data">
-        <input type="file" name="file" accept=".mid,.midi" multiple>
+        <input type="file" name="files" accept=".mid,.midi" multiple>
         <button type="submit">変換開始</button>
     </form>
     <hr>
@@ -49,17 +49,17 @@ def get_unique_filename(base_name: str) -> str:
     return candidate
 
 @app.post("/upload")
-async def upload_midi(background_tasks: BackgroundTasks, file: List[UploadFile] = File(...)):
-    for upload_file in file:
-        if not upload_file.filename:
+async def upload_midi(background_tasks: BackgroundTasks, files: List[UploadFile] = File(...)):
+    for file in files:
+        if not file.filename:
             continue
-        safe_filename = os.path.basename(upload_file.filename)
+        safe_filename = os.path.basename(file.filename)
         base_name, _ = os.path.splitext(safe_filename)
         unique_base = get_unique_filename(base_name)
         midi_path = os.path.join(UPLOAD_DIR, f"{unique_base}.mid")
         flac_path = os.path.join(OUTPUT_DIR, f"{unique_base}.flac")
         
-        contents = await upload_file.read()
+        contents = await file.read()
         with open(midi_path, "wb") as f:
             f.write(contents)
         

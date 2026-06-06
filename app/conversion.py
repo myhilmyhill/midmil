@@ -1,6 +1,5 @@
 import asyncio
 import os
-from datetime import datetime
 
 ALSA_DEVICE = "hw:Em28xxAudio"
 MIDI_PORT = "24:0"
@@ -22,8 +21,7 @@ def get_midi_reset_data() -> bytes:
 
 async def run_conversion(midi_path: str, output_path: str):
     async with process_lock:
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        print(f"[{now_str}] 変換開始: {midi_path}")
+        print(f"変換開始: {midi_path}")
         
         # 録音開始前にMIDIリセットメッセージ（全ノートOFF、コントローラーリセット、GMリセット）を送信
         try:
@@ -66,8 +64,8 @@ async def run_conversion(midi_path: str, output_path: str):
 
         # 録音開始後にミキサーのミュート解除と音量調整を実行
         mixer_cmds = [
-            ["amixer", "-D", "hw:Em28xxAudio", "cset", "name=Line In Switch", "on"],
-            ["amixer", "-D", "hw:Em28xxAudio", "cset", "name=Line In Volume", "50%"],
+            ["amixer", "-D", ALSA_DEVICE, "cset", "name=Line In Switch", "on"],
+            ["amixer", "-D", ALSA_DEVICE, "cset", "name=Line In Volume", "50%"],
         ]
         for cmd in mixer_cmds:
             for attempt in range(5):
@@ -129,5 +127,4 @@ async def run_conversion(midi_path: str, output_path: str):
                 except Exception as e:
                     print(f"Failed to clean up incomplete FLAC file {temp_flac_path}: {e}")
 
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        print(f"[{now_str}] 変換完了: {output_path}")
+        print(f"変換完了: {output_path}")
