@@ -17,10 +17,27 @@ app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    files = sorted(os.listdir(OUTPUT_DIR))
+    files = os.listdir(OUTPUT_DIR)
+    items = []
+    for f in files:
+        if f.endswith(".flac"):
+            items.append({
+                "filename": f,
+                "display_name": f,
+                "is_tmp": False
+            })
+        elif f.endswith(".flac.tmp"):
+            items.append({
+                "filename": f,
+                "display_name": f[:-4],  # Remove ".tmp"
+                "is_tmp": True
+            })
+            
+    items.sort(key=lambda x: x["display_name"])
+    
     file_list_html = "".join([
-        f'<li><a href="/outputs/{f}">{f}</a>' 
-        for f in files if f.endswith(".flac")
+        f'<li>{item["display_name"]}' if item["is_tmp"] else f'<li><a href="/outputs/{item["filename"]}">{item["display_name"]}</a>'
+        for item in items
     ])
 
     return f"""
